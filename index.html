@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Grasscaress — viens toucher l'herbe</title>
+<style>
+  :root {
+    --sky-top: #F6D9A3;
+    --sky-mid: #EDE3B4;
+    --sky-low: #CFE8C0;
+    --ink: #24451F;
+    --pollen: #FFE9A8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-mid) 45%, var(--sky-low) 100%);
+    font-family: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI", system-ui, sans-serif;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; -webkit-tap-highlight-color: transparent; }
+  @media (pointer: fine) { canvas { cursor: none; } }
+
+  .title {
+    position: fixed;
+    top: 12%;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: var(--ink);
+    pointer-events: none;
+    transition: opacity 1.6s ease, transform 1.6s ease;
+    z-index: 3;
+  }
+  .title h1 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: clamp(2.4rem, 7vw, 4.6rem);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+  .title h1 span {
+    display: inline-block;
+    will-change: transform;
+  }
+  .title p {
+    margin-top: 0.6em;
+    font-size: clamp(0.95rem, 2.4vw, 1.15rem);
+    opacity: 0.75;
+    letter-spacing: 0.04em;
+  }
+
+  .counter {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--ink);
+    background: rgba(255, 252, 240, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border-radius: 999px;
+    padding: 8px 18px;
+    font-size: 0.95rem;
+    letter-spacing: 0.03em;
+    pointer-events: none;
+    z-index: 3;
+    opacity: 0;
+    transition: opacity 1s ease;
+  }
+  .counter.visible { opacity: 1; }
+
+  .sound-btn {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 4;
+    background: rgba(255, 252, 240, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: none;
+    border-radius: 999px;
+    width: 44px;
+    height: 44px;
+    font-size: 1.2rem;
+    cursor: pointer;
+    color: var(--ink);
+    transition: transform 0.15s ease;
+  }
+  .sound-btn:hover { transform: scale(1.08); }
+  .sound-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .title, .counter { transition: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="field"></canvas>
+
+<div class="title" id="title">
+  <h1>Grasscaress</h1>
+  <p>Viens toucher l'herbe. Doucement.</p>
+</div>
+
+<div class="counter" id="counter">🌿 0 brins caressés</div>
+
+<button class="sound-btn" id="soundBtn" aria-label="Activer ou couper le son">🔇</button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('field');
+  const ctx = canvas.getContext('2d');
+  const titleEl = document.getElementById('title');
+  const counterEl = document.getElementById('counter');
+  const soundBtn = document.getElementById('soundBtn');
+
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let W = 0, H = 0, DPR = 1;
+  let blades = [];
+  let daisies = [];
+  let pollen = [];
+  let caressCount = 0;
+  let touched = false;
+
+  // ---------- Pointeur ----------
+  const pointer = { x: -9999, y: -9999, px: -9999, py: -9999, speed: 0, down: false, active: false };
+
+  // ---------- Palette des brins ----------
+  const GREENS = [
+    ['#2C6E3B', '#5FB765'],
+    ['#33804A', '#7BC97A'],
+    ['#3E9455', '#8FD37A'],
+    ['#2A5F33', '#6FBF6E'],
+    ['#46A05C', '#A3DD8E'],
+  ];
+
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  // ---------- Construction du champ ----------
+  function buildField() {
+    blades = [];
+    daisies = [];
+    const density = Math.min(700, Math.max(220, Math.floor(W / 2.4)));
+    const horizon = H * 0.52;
+
+    for (let i = 0; i < density; i++) {
+      const depth = Math.pow(Math.random(), 1.6); // plus de brins proches
+      const baseY = horizon + depth * (H - horizon);
+      const scale = 0.35 + depth * 0.85;
+      const [dark, light] = GREENS[Math.floor(Math.random() * GREENS.length)];
+      blades.push({
+        x: rand(-20, W + 20),
+        y: baseY,
+        len: rand(46, 96) * scale,
+        width: rand(2.2, 4.6) * scale,
+        lean: rand(-0.22, 0.22),
+        phase: rand(0, Math.PI * 2),
+        swayAmp: rand(0.05, 0.14),
+        // ressort du sommet
+        tip: 0, vel: 0,
+        stiffness: rand(0.045, 0.09),
+        damping: rand(0.86, 0.93),
+        dark, light,
+        depth,
+        caressed: false,
+        caressCooldown: 0,
+      });
+    }
+    blades.sort((a, b) => a.y - b.y); // les plus lointains d'abord
+
+    // Quelques pâquerettes
+    const nDaisies = Math.floor(density / 55);
+    for (let i = 0; i < nDaisies; i++) {
+      const depth = Math.pow(Math.random(), 1.4);
+      daisies.push({
+        x: rand(30, W - 30),
+        y: horizon + depth * (H - horizon) * rand(0.35, 0.95),
+        r: (4 + depth * 6),
+        phase: rand(0, Math.PI * 2),
+      });
+    }
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildField();
+  }
+  let resizeTimer = null;
+  function scheduleResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      // Ignorer les micro-variations dues à la barre d'URL mobile
+      if (Math.abs(window.innerWidth - W) < 2 && Math.abs(window.innerHeight - H) < 80) {
+        const h = window.innerHeight;
+        if (h !== H) { H = h; canvas.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); }
+        return;
+      }
+      resize();
+      requestAnimationFrame(cacheLetterPositions);
+    }, 150);
+  }
+  window.addEventListener('resize', scheduleResize);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', scheduleResize);
+  resize();
+
+  // ---------- Son procédural (bruissement) ----------
+  let audioCtx = null, noiseGain = null, soundOn = false;
+
+  function initAudio() {
+    if (audioCtx) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const bufferSize = audioCtx.sampleRate * 2;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        last = (last + 0.02 * white) / 1.02; // bruit rosé doux
+        data[i] = last * 3.2;
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 2400;
+      filter.Q.value = 0.6;
+      noiseGain = audioCtx.createGain();
+      noiseGain.gain.value = 0;
+      src.connect(filter).connect(noiseGain).connect(audioCtx.destination);
+      src.start();
+    } catch (e) { /* pas de son disponible */ }
+  }
+
+  soundBtn.addEventListener('click', () => {
+    soundOn = !soundOn;
+    soundBtn.textContent = soundOn ? '🔊' : '🔇';
+    if (soundOn) { initAudio(); audioCtx && audioCtx.resume(); }
+    else if (noiseGain) noiseGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+  });
+
+  // ---------- Événements pointeur ----------
+  function updatePointer(x, y) {
+    pointer.px = pointer.x; pointer.py = pointer.y;
+    pointer.x = x; pointer.y = y;
+    pointer.active = true;
+    if (!touched) {
+      touched = true;
+      counterEl.classList.add('visible');
+    }
+  }
+  function releasePointer() {
+    pointer.down = false;
+    pointer.active = false;
+    pointer.x = -9999; pointer.y = -9999;
+    pointer.px = -9999; pointer.py = -9999;
+    pointer.speed = 0;
+  }
+
+  // Souris / stylet
+  window.addEventListener('pointermove', e => { if (e.pointerType !== 'touch') updatePointer(e.clientX, e.clientY); });
+  window.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch') { pointer.down = true; updatePointer(e.clientX, e.clientY); }
+    if (soundOn) { initAudio(); audioCtx && audioCtx.resume(); }
+  });
+  window.addEventListener('pointerup', e => { if (e.pointerType !== 'touch') pointer.down = false; });
+  window.addEventListener('pointercancel', releasePointer);
+  document.addEventListener('mouseleave', releasePointer);
+
+  // Tactile : listeners explicites avec preventDefault pour bloquer scroll/zoom
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t0 = e.touches[0];
+    pointer.down = true;
+    pointer.px = t0.clientX; pointer.py = t0.clientY;
+    updatePointer(t0.clientX, t0.clientY);
+    if (soundOn) { initAudio(); audioCtx && audioCtx.resume(); }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const t0 = e.touches[0];
+    updatePointer(t0.clientX, t0.clientY);
+  }, { passive: false });
+  canvas.addEventListener('touchend', e => { e.preventDefault(); releasePointer(); }, { passive: false });
+  canvas.addEventListener('touchcancel', releasePointer);
+
+  // ---------- Titre : lettres distordables ----------
+  const h1 = titleEl.querySelector('h1');
+  const letters = [];
+  {
+    const text = h1.textContent;
+    h1.textContent = '';
+    for (const ch of text) {
+      const span = document.createElement('span');
+      span.textContent = ch;
+      h1.appendChild(span);
+      letters.push({ el: span, cx: 0, cy: 0, ox: 0, oy: 0, vx: 0, vy: 0, rot: 0, vr: 0, phase: rand(0, Math.PI * 2) });
+    }
+  }
+  function cacheLetterPositions() {
+    for (const l of letters) {
+      const r = l.el.getBoundingClientRect();
+      // position au repos = position mesurée moins l'offset courant
+      l.cx = r.left + r.width / 2 - l.ox;
+      l.cy = r.top + r.height / 2 - l.oy;
+    }
+  }
+  // mesurer après le premier rendu, puis à chaque resize
+  requestAnimationFrame(cacheLetterPositions);
+  const TITLE_RADIUS = 90;
+
+  function updateTitleDistortion() {
+    if (reducedMotion) return;
+    for (const l of letters) {
+      let fx = 0, fy = 0, fr = 0;
+      const dx = l.cx - pointer.x;
+      const dy = l.cy - pointer.y;
+      const dist = Math.hypot(dx, dy);
+      if (pointer.active && dist < TITLE_RADIUS) {
+        const push = (1 - dist / TITLE_RADIUS) * (2.2 + pointer.speed * 0.25);
+        const inv = dist > 0.5 ? 1 / dist : 0;
+        fx = dx * inv * push * 2.4;
+        fy = dy * inv * push * 1.6 + Math.sin(t * 6 + l.phase) * push * 0.6;
+        fr = (dx >= 0 ? 1 : -1) * push * 0.9;
+      }
+      // ressort vers le repos
+      l.vx += fx * 0.4 - l.ox * 0.08; l.vx *= 0.86;
+      l.vy += fy * 0.4 - l.oy * 0.08; l.vy *= 0.86;
+      l.vr += fr * 0.4 - l.rot * 0.08; l.vr *= 0.86;
+      l.ox += l.vx; l.oy += l.vy; l.rot += l.vr;
+      if (Math.abs(l.ox) > 0.05 || Math.abs(l.oy) > 0.05 || Math.abs(l.rot) > 0.05) {
+        l.el.style.transform = `translate(${l.ox.toFixed(2)}px, ${l.oy.toFixed(2)}px) rotate(${l.rot.toFixed(2)}deg)`;
+      } else if (l.el.style.transform) {
+        l.el.style.transform = '';
+      }
+    }
+  }
+
+
+  function spawnPollen(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      pollen.push({
+        x: x + rand(-8, 8), y: y + rand(-6, 4),
+        vx: rand(-0.4, 0.4), vy: rand(-1.4, -0.5),
+        life: 1, size: rand(1.2, 2.8),
+      });
+    }
+    if (pollen.length > 260) pollen.splice(0, pollen.length - 260);
+  }
+
+  // ---------- Boucle ----------
+  let t = 0;
+  const isCoarse = window.matchMedia('(pointer: coarse)').matches;
+  const CARESS_RADIUS = isCoarse ? 95 : 70;
+
+  function frame() {
+    t += reducedMotion ? 0.004 : 0.016;
+
+    // vitesse du pointeur
+    const dx = pointer.x - pointer.px, dy = pointer.y - pointer.py;
+    pointer.speed = pointer.speed * 0.85 + Math.min(Math.hypot(dx, dy), 40) * 0.15;
+    pointer.px = pointer.x; pointer.py = pointer.y;
+
+    // volume du bruissement selon la vitesse
+    if (noiseGain && audioCtx && soundOn) {
+      const target = Math.min(pointer.speed / 40, 1) * 0.12;
+      noiseGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.08);
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Soleil discret
+    const sunX = W * 0.78, sunY = H * 0.2;
+    const sun = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, H * 0.3);
+    sun.addColorStop(0, 'rgba(255, 240, 200, 0.75)');
+    sun.addColorStop(1, 'rgba(255, 240, 200, 0)');
+    ctx.fillStyle = sun;
+    ctx.fillRect(0, 0, W, H);
+
+    // Sol
+    const horizon = H * 0.52;
+    const ground = ctx.createLinearGradient(0, horizon, 0, H);
+    ground.addColorStop(0, '#9FCE8B');
+    ground.addColorStop(1, '#4E8E4C');
+    ctx.fillStyle = ground;
+    ctx.fillRect(0, horizon, W, H - horizon);
+
+    // Brins
+    let frameCaresses = 0;
+    for (const b of blades) {
+      // vent
+      const wind = Math.sin(t * 1.1 + b.phase + b.x * 0.006) * b.swayAmp
+                 + Math.sin(t * 0.37 + b.x * 0.002) * 0.04;
+
+      // interaction pointeur
+      const tipX0 = b.x + Math.sin(b.lean) * b.len;
+      const tipY0 = b.y - Math.cos(b.lean) * b.len;
+      const ddx = tipX0 - pointer.x;
+      const ddy = tipY0 - pointer.y;
+      const dist = Math.hypot(ddx, ddy);
+      if (pointer.active && dist < CARESS_RADIUS) {
+        const push = (1 - dist / CARESS_RADIUS) * (0.9 + pointer.speed * 0.06);
+        b.vel += (ddx >= 0 ? 1 : -1) * push * 0.12;
+        if (b.caressCooldown <= 0 && pointer.speed > 1.5) {
+          b.caressCooldown = 40;
+          frameCaresses++;
+          if (Math.random() < 0.25 && !reducedMotion) spawnPollen(tipX0, tipY0, 2);
+        }
+      }
+      if (b.caressCooldown > 0) b.caressCooldown--;
+
+      // ressort
+      b.vel += -b.tip * b.stiffness;
+      b.vel *= b.damping;
+      b.tip += b.vel;
+      b.tip = Math.max(-1.3, Math.min(1.3, b.tip));
+
+      const angle = b.lean + wind + b.tip;
+      const tx = b.x + Math.sin(angle) * b.len;
+      const ty = b.y - Math.cos(angle) * b.len;
+      const cx = b.x + Math.sin(b.lean + wind * 0.4 + b.tip * 0.4) * b.len * 0.45;
+      const cy = b.y - b.len * 0.55;
+
+      const grad = ctx.createLinearGradient(b.x, b.y, tx, ty);
+      grad.addColorStop(0, b.dark);
+      grad.addColorStop(1, b.light);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = b.width;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.quadraticCurveTo(cx, cy, tx, ty);
+      ctx.stroke();
+    }
+
+    if (frameCaresses > 0) {
+      caressCount += frameCaresses;
+      counterEl.textContent = `🌿 ${caressCount.toLocaleString('fr-FR')} brins caressés`;
+    }
+
+    // Pâquerettes
+    for (const d of daisies) {
+      const sway = Math.sin(t * 0.9 + d.phase) * 2;
+      const px = d.x + sway, py = d.y;
+      ctx.fillStyle = '#FFFDF4';
+      for (let p = 0; p < 6; p++) {
+        const a = (p / 6) * Math.PI * 2 + d.phase;
+        ctx.beginPath();
+        ctx.ellipse(px + Math.cos(a) * d.r * 0.7, py + Math.sin(a) * d.r * 0.7, d.r * 0.42, d.r * 0.24, a, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#F4C24A';
+      ctx.beginPath();
+      ctx.arc(px, py, d.r * 0.34, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Pollen
+    for (let i = pollen.length - 1; i >= 0; i--) {
+      const p = pollen[i];
+      p.x += p.vx + Math.sin(t * 2 + p.y * 0.05) * 0.2;
+      p.y += p.vy;
+      p.vy *= 0.99;
+      p.life -= 0.008;
+      if (p.life <= 0) { pollen.splice(i, 1); continue; }
+      ctx.fillStyle = `rgba(255, 233, 168, ${p.life * 0.9})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Curseur : une petite main de lumière
+    if (pointer.active && pointer.x > -100) {
+      const glow = ctx.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 46);
+      glow.addColorStop(0, 'rgba(255, 250, 220, 0.35)');
+      glow.addColorStop(1, 'rgba(255, 250, 220, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(pointer.x, pointer.y, 46, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 245, 0.9)';
+      ctx.beginPath();
+      ctx.arc(pointer.x, pointer.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    updateTitleDistortion();
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
